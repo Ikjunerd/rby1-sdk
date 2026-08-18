@@ -203,7 +203,72 @@ PYTHONPATH=examples/python python3 examples/python/01_hello_rby1.py --address lo
 
 ---
 
-## 4. 예제 목록
+## 4. 실제 로봇에 연결하기
+
+### SDK 쪽은 바꿀 게 없다
+
+SDK는 gRPC로만 로봇과 통신한다. 시뮬레이터든 실기든 **`--address`만 바꾸면 끝**이다.
+
+```bash
+python3 01_hello_rby1.py --address 192.168.30.1:50051 --model a
+```
+
+`192.168.30.1:50051` 은 예제 주석들이 공통으로 쓰는 RB-Y1 UPC(온보드 PC) 주소다. 실제 값은 로봇 설정에 따라 다를 수 있으니 장비 문서/UPC 설정으로 확인한다.
+
+### 네트워크 준비 — 이 PC는 VMware VM이다
+
+확인된 현재 환경:
+
+| 항목 | 값 |
+|---|---|
+| 가상화 | VMware (`systemd-detect-virt` → `vmware`) |
+| NIC | `ens33`, MAC `00:0c:29:...` (VMware 가상 NIC) |
+| IP | `192.168.89.142/24` (VMware NAT 대역) |
+
+**호스트에 랜선을 꽂는 것만으로는 로봇이 보이지 않는다.** NAT 대역에 갇혀 있어서 `192.168.30.x`로 라우팅되지 않는다. 둘 중 하나가 필요하다:
+
+1. **Bridged 모드** — VM 설정 > Network Adapter > `Bridged (Automatic)`. 로봇이 연결된 물리 NIC를 지정하는 게 확실하다.
+2. **물리 NIC 패스스루** — 로봇 전용 랜카드를 VM에 직접 붙인다.
+
+그다음 게스트 쪽 인터페이스를 로봇과 같은 대역에 올린다 (DHCP가 없으면 고정 IP):
+
+```bash
+sudo ip addr add 192.168.30.100/24 dev ens33
+```
+
+영구 설정은 netplan 또는 NetworkManager로 잡는다.
+
+### 연결 확인 순서
+
+```bash
+ip -br addr
+```
+
+```bash
+ping -c 3 192.168.30.1
+```
+
+```bash
+nc -zv 192.168.30.1 50051
+```
+
+```bash
+cd ~/GitHub/rby1-sdk/examples/python && python3 01_hello_rby1.py --address 192.168.30.1:50051 --model a
+```
+
+`ping`은 되는데 `nc`가 막히면 로봇 쪽 RPC 서버가 안 떠 있거나 방화벽 문제다.
+
+### 실기에서 달라지는 점
+
+- **모델을 맞춰야 한다.** `--model` 은 실제 장비에 맞게 `a` / `m` / `ub`.
+- **[5. 예제 목록](#5-예제-목록)의 🚫 항목이 이제 동작한다.** PID 게인, Wi-Fi, 리더암, 시리얼 장치 등은 원래 실기 전용이다.
+- **전원 / 서보 / 브레이크 / 비상정지가 실재한다.** `initialize_robot()`이 전원과 서보를 자동으로 켜므로, 실행 즉시 로봇에 힘이 들어간다.
+- **⚠️ 예제는 실제로 팔이 움직인다.** 주변 공간을 확보하고, 비상정지 버튼에 손이 닿는 위치에서 실행한다.
+- 게임패드 텔레오퍼레이션은 시작하자마자 ready 자세로 4초간 이동한다. 처음에는 `_LIN_SPEED` / `_BOX` 를 줄여 놓고 시작하는 게 안전하다.
+
+---
+
+## 5. 예제 목록
 
 > ⚠️ 표시는 로봇이 움직이므로 **주변 공간 확보 후** 실행.
 > 🚫 표시는 실기 전용 — 시뮬레이터에서는 동작하지 않는다.
@@ -249,7 +314,7 @@ PYTHONPATH=examples/python python3 examples/python/01_hello_rby1.py --address lo
 
 ---
 
-## 5. 게임패드 텔레오퍼레이션 (`90_gamepad_teleop.py`)
+## 6. 게임패드 텔레오퍼레이션 (`90_gamepad_teleop.py`)
 
 오른팔 엔드이펙터를 게임패드로 카테시안 델타 제어한다. 시작 시 팔을 ready 자세로 4초간 이동시킨 뒤 20 Hz로 목표 포즈를 스트리밍한다.
 
@@ -304,7 +369,7 @@ INFO - Triggers: digital buttons 7/8
 
 ---
 
-## 6. 트러블슈팅
+## 7. 트러블슈팅
 
 ### `pygame.error: Invalid joystick axis`
 
@@ -343,7 +408,7 @@ python3 17_fault_log.py --address localhost:50051
 
 ---
 
-## 7. SDK 설치 / 재설치
+## 8. SDK 설치 / 재설치
 
 ```bash
 pip install rby1-sdk
