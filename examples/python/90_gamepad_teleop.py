@@ -14,7 +14,7 @@
 # Controls (defaults; verify with --probe):
 #   Left stick   : EE x / y
 #   Right stick X: wrist yaw (rotation about the tool z-axis)
-#   L2 / R2      : EE z down / up
+#   L2 / R2 (ZL / ZR) : EE z down / up
 #   Ctrl+C       : stop
 
 import argparse
@@ -51,7 +51,10 @@ _BOX = np.array([0.35, 0.35, 0.30])
 
 # Axis indices — Pro Controller under hid-nintendo. Check with --probe.
 _AX_LX, _AX_LY, _AX_RX = 0, 1, 2
+# Analog triggers, when the pad exposes them (6-axis pads such as Xbox/DS4).
 _AX_L2, _AX_R2 = 4, 5
+# hid-nintendo reports ZL/ZR as digital buttons instead, with only 4 axes.
+_BTN_ZL, _BTN_ZR = 7, 8
 
 
 def _dz(v):
@@ -74,6 +77,29 @@ def open_pad():
     pad.init()
     logging.info("Gamepad: %s (%d axes, %d buttons)", pad.get_name(), pad.get_numaxes(), pad.get_numbuttons())
     return pad
+
+
+def make_trigger_reader(pad):
+    """Return read() -> (l2, r2) in 0..1, adapting to analog or digital triggers."""
+    if pad.get_numaxes() > max(_AX_L2, _AX_R2):
+        # Triggers rest at -1.0 and travel to +1.0 -> remap to 0..1.
+        def read():
+            return (pad.get_axis(_AX_L2) + 1.0) / 2.0, (pad.get_axis(_AX_R2) + 1.0) / 2.0
+
+        logging.info("Triggers: analog axes %d/%d", _AX_L2, _AX_R2)
+    elif pad.get_numbuttons() > max(_BTN_ZL, _BTN_ZR):
+        def read():
+            return float(pad.get_button(_BTN_ZL)), float(pad.get_button(_BTN_ZR))
+
+        logging.info("Triggers: digital buttons %d/%d", _BTN_ZL, _BTN_ZR)
+    else:
+        logging.error(
+            "Gamepad exposes %d axes / %d buttons — no usable triggers. Run with --probe.",
+            pad.get_numaxes(),
+            pad.get_numbuttons(),
+        )
+        exit(1)
+    return read
 
 
 def probe(pad):
@@ -100,6 +126,7 @@ def move_to_ready(robot, robot_model):
 
 def main(address, model, power, servo):
     pad = open_pad()
+    read_triggers = make_trigger_reader(pad)
 
     robot = initialize_robot(address, model, power, servo)
     robot.set_parameter("cartesian_command.cutoff_frequency", "5")
@@ -135,9 +162,7 @@ def main(address, model, power, servo):
 
         dx = -_dz(pad.get_axis(_AX_LY)) * _LIN_SPEED * _DT   # stick up = +x
         dy = -_dz(pad.get_axis(_AX_LX)) * _LIN_SPEED * _DT   # stick left = +y
-        # triggers rest at -1.0 and travel to +1.0 → remap to 0..1
-        up = (pad.get_axis(_AX_R2) + 1.0) / 2.0
-        down = (pad.get_axis(_AX_L2) + 1.0) / 2.0
+        down, up = read_triggers()          # ZL = down, ZR = up
         dz = (up - down) * _LIN_SPEED * _DT
         dyaw = -_dz(pad.get_axis(_AX_RX)) * _YAW_SPEED * _DT
 

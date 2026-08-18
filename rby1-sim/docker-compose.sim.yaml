@@ -1,0 +1,10 @@
+services:
+  rby1-sim:
+    image: rainbowroboticsofficial/rby1-sim:0.10.6-a_v1.2
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    devices:
+      - /dev/dri:/dev/dri
+    network_mode: host
