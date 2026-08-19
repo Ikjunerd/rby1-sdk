@@ -18,8 +18,8 @@
 #   Left stick     : one 2 cm step in x / y per push (re-centre to step again)
 #   D-pad up/down  : one 2 cm step in z per press
 #   Right stick X  : one wrist-yaw step per push
-#   L button       : control the LEFT arm
-#   R button       : control the RIGHT arm
+#   L button       : control the RIGHT arm
+#   R button       : control the LEFT arm
 #   Capture button : print both arms' joint angles and end effector poses
 #   Ctrl+C         : stop
 
@@ -90,6 +90,9 @@ _HAT_DPAD = 0
 _BTN_DPAD_UP, _BTN_DPAD_DOWN = 11, 12
 
 # Arm selection. L / R shoulder buttons -- NOT the ZL / ZR triggers above.
+# The operator sits facing the robot, so their left is the robot's right: L selects the
+# robot's RIGHT arm and R its LEFT, and both stick axes are mirrored to match -- pushing
+# the stick away moves the hand away from the operator, which is the robot's -x.
 _BTN_L, _BTN_R = 5, 6
 
 # Capture ("screenshot") button: dump both arms' joint angles and EE poses.
@@ -341,7 +344,7 @@ def main(address, model, power, servo):
     while running[0]:
         pygame.event.pump()
 
-        for side, btn in (("left", _BTN_L), ("right", _BTN_R)):
+        for side, btn in (("right", _BTN_L), ("left", _BTN_R)):
             now = button(pad, btn)
             if now and not pressed[side] and side != selected:
                 selected = side
@@ -356,8 +359,8 @@ def main(address, model, power, servo):
         # One step per push, on the edge where the stick leaves the deadzone.
         direction = np.array(
             [
-                -_dz(pad.get_axis(_AX_LY)),  # stick up = +x
-                -_dz(pad.get_axis(_AX_LX)),  # stick left = +y
+                _dz(pad.get_axis(_AX_LY)),   # stick up = -x, i.e. away from the operator
+                _dz(pad.get_axis(_AX_LX)),   # stick left = -y, i.e. the operator's left
                 read_z(),                    # D-pad up = +z
             ]
         )
