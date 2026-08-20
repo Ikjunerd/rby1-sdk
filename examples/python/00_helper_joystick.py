@@ -42,6 +42,11 @@ BTN_L, BTN_R = 4, 5
 # digital button, entirely separate from the stick's axes, so it does not disturb yaw.
 BTN_CAPTURE = 10
 
+# Episode control, mirroring omy_collect_pick.py's Start / Back / A. These three are the
+# buttons an Xbox 360 pad has spare once arm selection, capture and the triggers are
+# spoken for: A=0, Back=6, Start=7.
+BTN_START, BTN_BACK, BTN_A = 7, 6, 0
+
 DEADZONE = 0.15
 
 # Triggers rest at -1.0 and travel to +1.0 -- but a pad that has not been touched since it
@@ -136,6 +141,9 @@ class PadInput:
     selected: Tuple[str, ...]
     selection_changed: bool
     capture: bool
+    start: bool
+    back: bool
+    clear: bool
     grip_toggle: Tuple[str, ...]
     direction: Optional[np.ndarray]
     yaw: Optional[float]
@@ -157,7 +165,8 @@ class Gamepad:
         self.pad = open_pad()
         self._read_z = make_z_reader(self.pad)
         self.selected = tuple(selected)
-        self._pressed = {"l": 0, "r": 0, "capture": 0, "lt": 0, "rt": 0}
+        self._pressed = {"l": 0, "r": 0, "capture": 0, "lt": 0, "rt": 0,
+                         "start": 0, "back": 0, "a": 0}
         # A push only fires once; the stick has to return to centre to fire again.
         self._engaged = {"move": False, "yaw": False}
 
@@ -170,6 +179,9 @@ class Gamepad:
             selected=selected,
             selection_changed=changed,
             capture=self._poll_edge(BTN_CAPTURE, "capture"),
+            start=self._poll_edge(BTN_START, "start"),
+            back=self._poll_edge(BTN_BACK, "back"),
+            clear=self._poll_edge(BTN_A, "a"),
             grip_toggle=self._poll_triggers(),
             direction=self._poll_direction(),
             yaw=self._poll_yaw(),

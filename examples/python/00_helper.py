@@ -168,15 +168,37 @@ READY_RIGHT_ARM = ready_arm(-SHOULDER, -ELBOW)
 READY_LEFT_ARM = ready_arm(SHOULDER, -ELBOW)
 
 
-def move_to_ready(robot, robot_model, minimum_time=4.0):
-    if not movej(
-        robot,
-        torso=None if robot_model.model_name == "UB" else np.deg2rad([0.0, 45.0, -90.0, 45.0, 0.0, 0.0]),
-        right_arm=READY_RIGHT_ARM,
-        left_arm=READY_LEFT_ARM,
-        minimum_time=minimum_time,
-    ):
+def move_to_ready(robot, robot_model, minimum_time=4.0, fatal=True, attempts=4, settle=0.3):
+    """Send both arms to the ready pose. True on success.
+
+    Retries because a jog stream does not release the arms the instant it is cancelled:
+    measured on the simulator, a movej issued immediately after stream.cancel() is
+    refused, and the identical call 0.3 s later succeeds. One attempt would therefore
+    fail every time this is used to reset between episodes.
+
+    fatal=True keeps the startup behaviour of giving up on the whole run; callers inside
+    the teleop loop pass False, where losing the reset is not a reason to end a session.
+    """
+    for attempt in range(attempts):
+        # Wait before the first attempt too, not only between retries. Coming out of a
+        # cancelled jog stream the first movej is always refused, and movej reports that
+        # at ERROR -- which reads like a fault when it is just the server letting go.
+        # Paying the settle up front costs a fraction of a second and keeps the normal
+        # path quiet; the retries stay as the backstop for when it takes longer.
+        time.sleep(settle)
+        if movej(
+            robot,
+            torso=None if robot_model.model_name == "UB" else np.deg2rad([0.0, 45.0, -90.0, 45.0, 0.0, 0.0]),
+            right_arm=READY_RIGHT_ARM,
+            left_arm=READY_LEFT_ARM,
+            minimum_time=minimum_time,
+        ):
+            return True
+        if attempt + 1 < attempts:
+            logging.info("Ready pose refused, retrying (%d/%d)", attempt + 1, attempts)
+    if fatal:
         exit(1)
+    return False
 
 
 # ── Cartesian jogging ─────────────────────────────────────────────────────────────────
@@ -291,6 +313,15 @@ class ArmJogger:
     def cancel(self):
         self.stream.cancel()
 
+    def reopen(self):
+        """Take the arms back after something else has driven them.
+
+        The box centre and orientation reference are left alone on purpose: they were
+        fixed at the ready pose, which is where a reset puts the arms back, so rebasing
+        them here would only let the reachable box creep with every episode.
+        """
+        self.stream = self.robot.create_command_stream()
+
     def _arm_command(self, side, target, elbow):
         cmd = rby.CartesianCommandBuilder().set_command_header(
             rby.CommandHeaderBuilder().set_control_hold_time(HOLD_TIME)
@@ -314,6 +345,7 @@ class ArmJogger:
 #
 # Dynamixel ID 0 is the right gripper and 1 the left, the order set_target expects.
 GRIP_IDS = [0, 1]
+SIDE_OF_GRIP_ID = {0: "right", 1: "left"}
 GRIP_OPEN, GRIP_CLOSED = 0.0, 1.0   # normalised; homing maps these onto the real travel
 GRIP_HOLD_TORQUE = 5.0
 GRIP_HOMING_TORQUE = 0.3
@@ -339,6 +371,9 @@ class Gripper:
         self.max_q = np.array([-np.inf, -np.inf])
         self.target_q = None
         self.closed = {"right": False, "left": False}
+        # Measured opening, normalised 0 open .. 1 closed. Filled by the worker thread --
+        # see _loop for why the collector must not read the bus itself.
+        self.measured = {"right": np.nan, "left": np.nan}
         self._running = False
         self._thread = None
 
@@ -421,7 +456,29 @@ class Gripper:
         while self._running:
             if self.target_q is not None:
                 self.bus.group_sync_write_send_position(list(enumerate(self.target_q.tolist())))
+            self._read_measured()
             time.sleep(GRIP_PERIOD)
+
+    def _read_measured(self):
+        """Cache the encoder reading for anyone who wants the real opening.
+
+        This thread is the only one that touches the bus. A data collector sampling the
+        encoder on its own thread would put two callers on one serial port, interleaving
+        with the position writes above; caching here costs one extra read per cycle and
+        removes the question.
+        """
+        if not np.isfinite(self.min_q).all() or not np.isfinite(self.max_q).all():
+            return
+        rv = self.bus.group_fast_sync_read_encoder(GRIP_IDS)
+        if rv is None:
+            return
+        span = self.max_q - self.min_q
+        for dev_id, enc in rv:
+            if span[dev_id] == 0:
+                continue
+            # Inverse of set_target: 1 is closed and maps to min_q.
+            n = 1.0 - (enc - self.min_q[dev_id]) / span[dev_id]
+            self.measured[SIDE_OF_GRIP_ID[dev_id]] = float(np.clip(n, 0.0, 1.0))
 
 
 class FakeGripper:
@@ -434,6 +491,7 @@ class FakeGripper:
 
     def __init__(self):
         self.closed = {"right": False, "left": False}
+        self.measured = {"right": 0.0, "left": 0.0}
 
     def initialize(self):
         return True
@@ -453,8 +511,10 @@ class FakeGripper:
         logging.info("%s gripper %s", side.upper(), "closed" if self.closed[side] else "open")
 
     def apply(self):
-        logging.info("[fake gripper] normalised target right/left = %s",
-                     [GRIP_CLOSED if self.closed[s] else GRIP_OPEN for s in ("right", "left")])
+        target = [GRIP_CLOSED if self.closed[s] else GRIP_OPEN for s in ("right", "left")]
+        # No servo to lag behind the command, so measured is simply the command.
+        self.measured = {"right": target[0], "left": target[1]}
+        logging.info("[fake gripper] normalised target right/left = %s", target)
 
 
 def open_grippers(fake=False):
