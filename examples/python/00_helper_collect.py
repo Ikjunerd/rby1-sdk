@@ -26,13 +26,32 @@ try:
 except ImportError:
     rs = None
 
+# Only used to label the synthetic frames; the collector itself needs no OpenCV.
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 SIDES = ("right", "left")
 
-# Matches the profile the existing ROS launch uses for these cameras. Measured on one
-# D405 over USB 3.0: 424x240@15 and 848x480@30 both run without dropping a frame, and
-# even 1280x720@30 holds. Two cameras share the bus on the real robot, though, so raise
-# this only after measuring there.
-CAM_WIDTH, CAM_HEIGHT, CAM_FPS = 424, 240, 15
+# Measured on one D405 over USB 3.0: 424x240@15, 848x480@30 and even 1280x720@30 all
+# run without dropping a frame. Two cameras share the bus on the real robot, though, so
+# confirm with 92_camera_check.py there before raising this further.
+#
+# Not every size is a real profile -- the device advertises a fixed list, and asking for
+# one that is not on it fails at pipeline start. 92_camera_check.py prints the list.
+CAM_WIDTH, CAM_HEIGHT, CAM_FPS = 640, 480, 30
+
+# Warm-up before the camera counts as started. A D405 takes colour from its stereo
+# imager and its auto-exposure drifts for a while after the pipeline opens -- measured on
+# one D405 at 640x480@30, the frame mean was still climbing at 2 s and only levelled off
+# near 2.8 s. Discarding a fixed frame count is the wrong shape for that, since how long
+# it takes depends on the scene and the frame rate. Watch the brightness instead and stop
+# when it stops moving, with a ceiling so a genuinely dark scene cannot stall startup.
+CAM_WARMUP_MAX_S = 3.5
+CAM_WARMUP_STABLE = 4       # consecutive frames within CAM_WARMUP_EPS
+CAM_WARMUP_EPS = 0.5        # mean brightness change that counts as "still settling"
+CAM_DARK_MEAN = 2.0         # below this the picture is black, not merely dim
 
 # Sampling. Same knobs as the reference: the loop ticks every COLLECT_SLEEP and takes
 # every COLLECT_INTERVAL-th tick, so the default is ~20 Hz.
@@ -76,9 +95,33 @@ class RealSenseCamera:
             "Camera %s: %s serial %s, %dx%d@%d",
             self.label, dev.get_info(rs.camera_info.name), self.serial, self.width, self.height, self.fps
         )
+        self._warmup()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name=f"cam-{self.label}")
         self._thread.start()
+
+    def _warmup(self):
+        """Pull frames until the exposure stops moving, so nothing records the ramp."""
+        deadline = time.time() + CAM_WARMUP_MAX_S
+        prev, stable, mean = None, 0, None
+        while time.time() < deadline and stable < CAM_WARMUP_STABLE:
+            try:
+                c = self._pipe.wait_for_frames(2000).get_color_frame()
+            except RuntimeError:
+                break
+            if not c:
+                continue
+            mean = float(np.asanyarray(c.get_data()).mean())
+            stable = stable + 1 if prev is not None and abs(mean - prev) < CAM_WARMUP_EPS else 0
+            prev = mean
+        if mean is None:
+            helper.logging.warning("Camera %s: no frames during warm-up.", self.label)
+        elif mean < CAM_DARK_MEAN:
+            helper.logging.warning(
+                "Camera %s: frames are almost black after warm-up (mean %.1f). Check the lighting "
+                "and that nothing is covering the lens -- run 92_camera_check.py.", self.label, mean)
+        else:
+            helper.logging.info("Camera %s: exposure settled, frame mean %.1f", self.label, mean)
 
     def stop(self):
         self._running = False
@@ -115,8 +158,11 @@ class RealSenseCamera:
 class DummyCamera:
     """Synthetic frames, for exercising the collector without hardware.
 
-    The image carries a frame counter in its top-left pixels, so a recorded episode can
-    be checked for dropped or duplicated frames after the fact.
+    Deliberately loud. An earlier version wrote a frame counter into a corner of an
+    otherwise black image, and an episode recorded with it was indistinguishable at a
+    glance from one shot with the lens covered -- it cost a real debugging session to
+    tell the two apart. So these frames say what they are, in the picture, where anyone
+    scrubbing the data will see it. The counter is still there for checking drops.
     """
 
     def __init__(self, width=CAM_WIDTH, height=CAM_HEIGHT, fps=CAM_FPS, label="dummy"):
@@ -148,12 +194,28 @@ class DummyCamera:
 
     def _loop(self):
         while self._running:
-            img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-            img[:8, :8] = np.uint8(self._n % 256)
             with self._lock:
-                self._frame = (img, time.time() * 1000.0, time.time())
+                self._frame = (self._render(), time.time() * 1000.0, time.time())
             self._n += 1
             time.sleep(1.0 / self.fps)
+
+    def _render(self):
+        h, w = self.height, self.width
+        # A drifting diagonal band, so motion is visible and successive frames differ.
+        yy, xx = np.mgrid[0:h, 0:w]
+        band = ((xx + yy + self._n * 6) % 256).astype(np.uint8)
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        img[..., 0] = band // 3 + 40
+        img[..., 1] = 40
+        img[..., 2] = 120 - band // 4
+        # Frame counter in the corner, as before, for spotting drops and repeats.
+        img[:8, :8] = np.uint8(self._n % 256)
+        if cv2 is not None:
+            cv2.putText(img, "SYNTHETIC - NOT CAMERA DATA", (10, h // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, max(0.4, w / 900.0), (255, 255, 255), 2)
+            cv2.putText(img, f"frame {self._n}", (10, h // 2 + 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, max(0.35, w / 1400.0), (255, 255, 255), 1)
+        return img
 
 
 def open_cameras(serials, fake=False, width=CAM_WIDTH, height=CAM_HEIGHT, fps=CAM_FPS):
@@ -338,9 +400,15 @@ class ArmCollector:
                 f.write("\n".join(self.timestamps[side]) + "\n")
 
             cam = self.cameras.get(side)
+            if isinstance(cam, DummyCamera):
+                camera_desc = "DUMMY -- synthetic frames, not camera data"
+            elif cam is not None:
+                camera_desc = f"realsense d405 {cam.serial}"
+            else:
+                camera_desc = "none"
             with open(os.path.join(out, f"meta_{ts}.txt"), "w") as f:
                 f.write(f"robots: rby1_{side}_arm\n")
-                f.write(f"camera: {'realsense d405 ' + str(cam.serial) if cam else 'none'}\n")
+                f.write(f"camera: {camera_desc}\n")
                 f.write("per-robot format: [x, y, z, qx, qy, qz, qw, gripper]\n")
                 f.write(f"gripper: measured encoder, normalised 0 open .. 1 closed"
                         f"{'' if self.gripper else ' (unavailable, NaN)'}\n")
@@ -358,6 +426,8 @@ class ArmCollector:
 
             helper.logging.info("Saved %s | images: %d, motions: %d -> %s",
                                 side, len(self.imgs[side]), len(self.motions[side]), out)
+            if isinstance(cam, DummyCamera):
+                helper.logging.warning("  %s images are SYNTHETIC (--fake-camera) -- not training data.", side)
 
         self.episode_count += 1
         helper.logging.info("Episode %d saved (ts %s)", self.episode_count, ts)

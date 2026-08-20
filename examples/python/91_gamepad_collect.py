@@ -42,6 +42,11 @@ DATASET = os.path.expanduser("~/dataset")
 # Both sides currently name the one camera on the bench, which shares it: each arm's
 # dataset then holds the same pictures. Give the second D405 its own serial here before
 # recording anything that is meant to be trained on.
+#
+# Set a side to NO_CAMERA instead when no camera is mounted on it. That arm then records
+# poses only, which is what the dataset should say when there is nothing to see -- rather
+# than filling it with the other arm's view.
+NO_CAMERA = "none"
 CAMERA_RIGHT = "409122271622"
 CAMERA_LEFT = "409122271622"
 
@@ -53,8 +58,10 @@ def main():
     parser.add_argument("--power", type=str, default=".*", help="Power device name regex")
     parser.add_argument("--servo", type=str, default=".*", help="Servo name regex")
     parser.add_argument("--dataset", type=str, default=DATASET, help=f"Dataset root (default: '{DATASET}')")
-    parser.add_argument("--camera-right", type=str, default=CAMERA_RIGHT, help="Right gripper camera serial")
-    parser.add_argument("--camera-left", type=str, default=CAMERA_LEFT, help="Left gripper camera serial")
+    parser.add_argument("--camera-right", type=str, default=CAMERA_RIGHT,
+                        help=f"Right gripper camera serial, or '{NO_CAMERA}' for no camera on that arm")
+    parser.add_argument("--camera-left", type=str, default=CAMERA_LEFT,
+                        help=f"Left gripper camera serial, or '{NO_CAMERA}' for no camera on that arm")
     parser.add_argument("--fake-camera", action="store_true", help="Synthetic frames instead of the D405s")
     parser.add_argument("--cam-width", type=int, default=collect.CAM_WIDTH)
     parser.add_argument("--cam-height", type=int, default=collect.CAM_HEIGHT)
@@ -66,11 +73,20 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.camera_right == args.camera_left and not args.fake_camera:
-        logging.warning("Both arms are set to camera %s -- they will record the same view.", args.camera_right)
+    serials = {}
+    for side, serial in (("right", args.camera_right), ("left", args.camera_left)):
+        if serial and serial.lower() != NO_CAMERA:
+            serials[side] = serial
+        else:
+            logging.info("No camera on the %s arm -- it will record poses only.", side)
+    if not args.fake_camera and len(serials) == 2 and args.camera_right == args.camera_left:
+        logging.warning("Both arms are set to camera %s -- they will record the same view, "
+                        "which is bench testing, not training data.", args.camera_right)
+    if args.fake_camera:
+        serials = {"right": None, "left": None}
 
     collect_args = {
-        "serials": {"right": args.camera_right, "left": args.camera_left},
+        "serials": serials,
         "fake": args.fake_camera,
         "dataset": args.dataset,
         "width": args.cam_width,
