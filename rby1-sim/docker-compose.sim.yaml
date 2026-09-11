@@ -1,8 +1,14 @@
 services:
   rby1-sim:
-    image: rainbowroboticsofficial/rby1-sim:0.10.6-a_v1.2
+    build: .
+    image: rby1-sim:nonroot
+    # 호스트와 같은 UID 로 돌려서 X 접근 권한을 그대로 물려받는다.
+    # (root 로 돌면 매 세션 xhost +SI:localuser:root 가 필요하다)
+    user: "1000:1000"
+    group_add: ["44", "992"]   # video, render (호스트 GID)
     environment:
       - DISPLAY=${DISPLAY}
+      - HOME=/tmp              # UID 가 /etc/passwd 에 없어 HOME 이 / 로 잡히는 것 방지
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
     devices:

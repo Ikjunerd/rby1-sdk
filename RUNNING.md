@@ -3,12 +3,23 @@
 시뮬레이터를 띄우고 `examples/python`의 예제를 실행하기까지의 실전 메모.
 
 - SDK 버전: `rby1-sdk 0.10.0` (Python)
-- 시뮬레이터 이미지: `rainbowroboticsofficial/rby1-sim:0.10.6-a_v1.2`
+- 시뮬레이터 이미지: `rby1-sim:nonroot` (원본 `rainbowroboticsofficial/rby1-sim:0.10.6-a_v1.2` 기반, 로컬 빌드)
+- compose 파일: `~/dev/rby1-sdk/rby1-sim/docker-compose.sim.yaml`
 - 기본 접속 주소: `localhost:50051` (gRPC)
 
 ---
 
 ## 1. Docker 설치 (최초 1회)
+
+> **이미 Docker CE가 깔려 있다면 이 장은 통째로 건너뛴다.** 확인:
+>
+> ```bash
+> docker --version && docker compose version && docker ps
+> ```
+>
+> 셋 다 에러 없이 나오면 할 일이 없다.
+
+Docker가 아예 없는 PC라면:
 
 ```bash
 sudo apt update && sudo apt install -y docker.io docker-compose-v2 && sudo usermod -aG docker $USER
@@ -17,6 +28,26 @@ sudo apt update && sudo apt install -y docker.io docker-compose-v2 && sudo userm
 - `docker.io` : Docker 엔진 (우분투 공식 저장소 패키지)
 - `docker-compose-v2` : `docker compose` 서브커맨드 제공 (하이픈 버전 `docker-compose`가 아니다)
 - `usermod -aG docker $USER` : `sudo` 없이 docker를 쓰기 위해 현재 사용자를 `docker` 그룹에 추가
+
+### ⚠️ `containerd.io : Conflicts: containerd` 에러가 나면
+
+```
+The following packages have unmet dependencies:
+ containerd.io : Conflicts: containerd
+E: Error, pkgProblemResolver::Resolve generated breaks ...
+```
+
+**이미 Docker 공식 저장소의 Docker CE가 깔려 있다는 뜻이다.** 우분투 패키지 `docker.io`는 `containerd`를 요구하는데, 공식 저장소의 `containerd.io`와 같은 자리를 두고 `Conflicts` 관계라 apt가 해결하지 못한다.
+
+고칠 게 아니라 **설치 자체가 불필요한 상황**이다. 위 명령을 버리고 2장으로 간다. 굳이 `docker.io`를 쓰려면 docker-ce 계열을 전부 제거해야 하는데, 구버전으로 내려가는 거라 권하지 않는다.
+
+현재 어느 쪽이 깔렸는지는:
+
+```bash
+dpkg -l | grep -E 'docker|containerd' | awk '{print $2, $3}'
+```
+
+`docker-ce` / `containerd.io` 가 보이면 공식 저장소판, `docker.io` 가 보이면 우분투판이다.
 
 ### 그룹 반영
 
@@ -40,69 +71,44 @@ docker --version && docker compose version && docker run --rm hello-world
 sudo systemctl enable --now docker
 ```
 
-> 참고: 확인된 환경 기준 `docker.io`는 Docker 29.1.3, `docker-compose-v2`는 Compose 2.40.3 을 설치한다.
-> 최신 Docker CE가 필요하면 우분투 패키지 대신 Docker 공식 저장소(`get.docker.com`)를 쓴다.
+> 참고: 우분투 패키지 기준 `docker.io`는 Docker 29.1.3, `docker-compose-v2`는 Compose 2.40.3 을 설치한다.
+> 현재 이 PC는 공식 저장소판 **Docker CE 29.7.1 + Compose v5.4.0** 이 `enabled` 상태로 돌고 있다.
 
 ---
 
 ## 2. 시뮬레이터 실행 (Docker)
 
 ```bash
-xhost +local:docker && docker compose -f ~/rby1-sim/docker-compose.sim.yaml up
-```
-
-- `xhost +local:docker` : 컨테이너가 호스트 X 서버에 GUI 창을 띄울 수 있게 허용. **재부팅하면 초기화되므로 매번 필요.**
-- 컨테이너는 `network_mode: host` 라서 시뮬레이터 gRPC 서버가 호스트의 `localhost:50051`에 그대로 열린다.
-- 포그라운드로 뜨므로 이 터미널은 잡아두고, 예제는 **새 터미널**에서 실행한다.
-
-백그라운드로 띄우려면:
-
-```bash
-docker compose -f ~/rby1-sim/docker-compose.sim.yaml up -d
-```
-
-종료:
-
-```bash
-docker compose -f ~/rby1-sim/docker-compose.sim.yaml down
-```
-
-작업이 끝나면 X 접근 권한을 되돌리는 게 안전하다:
-
-```bash
-xhost -local:docker
-```
-
-### 두 번째부터는 `up` 대신 `start` (권장)
-
-`up`은 **컨테이너를 새로 만드는** 명령이다. 한 번 만들어 두면 그다음부터는 기존 컨테이너를 재사용하는 게 빠르다.
-
-```bash
 docker start rby1-sim-rby1-sim-1
 ```
 
-compose 파일이 없어도 동작한다 (컨테이너 이름 = `<디렉토리명>-<서비스명>-1`). compose로 하려면:
+끝이다. **`xhost`를 칠 필요가 없다** — 컨테이너를 호스트와 같은 UID(1000)로 돌려서 X 접근 권한을 그대로 물려받게 해뒀다. 자세한 건 아래 [비root 실행](#비root-실행--xhost가-필요-없는-이유) 참고.
+
+- 컨테이너는 `network_mode: host` 라서 시뮬레이터 gRPC 서버가 호스트의 `localhost:50051`에 그대로 열린다.
+- 로그를 붙여서 보려면 `docker start -a rby1-sim-rby1-sim-1` 또는 `docker logs -f rby1-sim-rby1-sim-1`.
+
+정지:
 
 ```bash
-docker compose -f ~/rby1-sim/docker-compose.sim.yaml start
+docker stop rby1-sim-rby1-sim-1
 ```
 
-로그를 터미널에 붙여서 보고 싶으면:
+### 컨테이너를 새로 만들 때만 `up`
 
-```bash
-docker start -a rby1-sim-rby1-sim-1
-```
+`up`은 **컨테이너를 새로 만드는** 명령이다. 최초 1회, 또는 compose 설정이나 `DISPLAY`가 바뀌었을 때만 쓴다.
 
 ```bash
-docker logs -f rby1-sim-rby1-sim-1
+cd ~/dev/rby1-sdk/rby1-sim && docker compose -f docker-compose.sim.yaml up -d --build
 ```
+
+`--build`가 필요한 이유는 원본 이미지를 그대로 쓰지 않고 로컬 파생 이미지(`rby1-sim:nonroot`)를 빌드하기 때문이다. 원본 이미지 pull은 최초 빌드 때 한 번만 일어난다.
 
 ### 정지는 `stop`, `down`이 아니다
 
 | 명령 | 컨테이너 | 다음 실행 |
 |---|---|---|
 | `docker stop rby1-sim-rby1-sim-1` | 남음 | `docker start` |
-| `docker compose ... down` | **삭제됨** | `docker compose ... up` (재생성 필요) |
+| `docker compose ... down` | **삭제됨** | `up --build` (재생성 필요) |
 
 즉 `down`을 쓰면 매번 `up`을 해야 한다. 평소에는 `stop` / `start`로 돌리는 게 편하다.
 
@@ -122,26 +128,55 @@ services:
 docker update --restart unless-stopped rby1-sim-rby1-sim-1
 ```
 
-### `xhost`는 여전히 필요하다
+### 비root 실행 — `xhost`가 필요 없는 이유
 
-`xhost`는 **호스트 X 서버 쪽 설정**이라 컨테이너 재사용과 무관하게 X 세션(로그인/재부팅)마다 초기화된다. 컨테이너가 root로 돌기 때문에 `+local:` 대신 root만 허용하는 게 더 좁고 안전하다:
+X 서버의 접근 목록에는 로그인 사용자(`SI:localuser:ikjune`)만 올라와 있다. 컨테이너가 **root로 돌면** 여기 해당되지 않아서 매 세션 `xhost +SI:localuser:root` 를 쳐야 했다. `xhost`는 호스트 X 서버 쪽 설정이라 컨테이너 재사용과 무관하게 X 세션(로그인/재부팅)마다 초기화되기 때문이다.
+
+컨테이너를 UID 1000으로 돌리면 이미 허용된 사용자로 붙으므로 `xhost` 자체가 불필요해진다. 다만 `user: "1000:1000"` 한 줄로는 안 되고 두 군데가 더 걸린다:
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| `Permission denied [/root/exe/app]` | 앱이 `/root` 밑에 있는데 `/root`가 `drwx------` | 파생 이미지에서 `chmod 755 /root` |
+| 즉시 크래시 (`Exited (139)`), 로그에 `cannot create directory: //.rby1` | UID 1000이 `/etc/passwd`에 없어 `HOME=/`로 잡힘 | `HOME=/tmp` 지정 |
+
+`/dev/dri` 접근을 위해 호스트 GID(video=44, render=992)를 `group_add`로 넣는다. **이름이 아니라 숫자로** 박아야 한다 — 이름은 컨테이너 안 `/etc/group` 기준으로 해석돼서 어긋난다.
+
+알아둘 점:
+
+- `HOME=/tmp`라 시뮬레이터 상태가 컨테이너 안 `/tmp/.rby1`에 쌓인다. `stop`/`start`로는 유지되고 컨테이너를 지우면 사라지는데, root로 돌 때 `/root/.rby1`이던 것과 같은 성질이라 달라지는 건 없다.
+- UID를 1000으로 박았으니 다른 사용자 계정에서는 그대로 쓸 수 없다.
+
+root로 돌리는 원래 방식으로 되돌리려면 compose에서 `build` / `user` / `group_add` / `HOME`을 빼고 `image`를 원본으로 되돌린 뒤, 매 세션 아래를 실행하면 된다:
 
 ```bash
 xhost +SI:localuser:root
 ```
 
-매번 치기 싫으면 `~/.profile` 등에 넣어 둔다. 현재 허용 상태는 `xhost` 를 인자 없이 실행해 확인한다.
+### `DISPLAY` 주의
 
-> 주의: `DISPLAY` 값은 **컨테이너 생성 시점**에 박힌다 (현재 `:0`). 나중에 `DISPLAY`가 바뀌면 `start`로는 반영되지 않으니 컨테이너를 지우고 `up`으로 다시 만들어야 한다.
+`DISPLAY` 값은 **컨테이너 생성 시점**에 박힌다 (현재 `:1`). 나중에 `DISPLAY`가 바뀌면 `start`로는 반영되지 않으니 컨테이너를 지우고 `up`으로 다시 만들어야 한다. `up`을 실행하는 터미널에서 `echo $DISPLAY`를 먼저 확인할 것.
 
-### compose 파일 내용 (`~/rby1-sim/docker-compose.sim.yaml`)
+### 파일 내용 (`~/dev/rby1-sdk/rby1-sim/`)
+
+`Dockerfile`:
+
+```dockerfile
+FROM rainbowroboticsofficial/rby1-sim:0.10.6-a_v1.2
+RUN chmod 755 /root
+```
+
+`docker-compose.sim.yaml`:
 
 ```yaml
 services:
   rby1-sim:
-    image: rainbowroboticsofficial/rby1-sim:0.10.6-a_v1.2
+    build: .
+    image: rby1-sim:nonroot
+    user: "1000:1000"
+    group_add: ["44", "992"]   # video, render (호스트 GID)
     environment:
       - DISPLAY=${DISPLAY}
+      - HOME=/tmp
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
     devices:
@@ -168,7 +203,7 @@ python3 -c "import rby1_sdk as rby; r=rby.create_robot('localhost:50051','a'); p
 예제들이 `importlib.import_module("00_helper")`로 헬퍼를 불러오기 때문에, 다른 디렉토리에서 실행하면 import가 깨진다.
 
 ```bash
-cd ~/GitHub/rby1-sdk/examples/python
+cd ~/dev/rby1-sdk/examples/python
 python3 01_hello_rby1.py --address localhost:50051
 ```
 
@@ -253,7 +288,7 @@ nc -zv 192.168.30.1 50051
 ```
 
 ```bash
-cd ~/GitHub/rby1-sdk/examples/python && python3 01_hello_rby1.py --address 192.168.30.1:50051 --model a
+cd ~/dev/rby1-sdk/examples/python && python3 01_hello_rby1.py --address 192.168.30.1:50051 --model a
 ```
 
 `ping`은 되는데 `nc`가 막히면 로봇 쪽 RPC 서버가 안 떠 있거나 방화벽 문제다.
@@ -321,7 +356,7 @@ cd ~/GitHub/rby1-sdk/examples/python && python3 01_hello_rby1.py --address 192.1
 ### 실행
 
 ```bash
-cd ~/GitHub/rby1-sdk/examples/python
+cd ~/dev/rby1-sdk/examples/python
 python3 90_gamepad_teleop.py --address localhost:50051 --model a
 ```
 
@@ -383,8 +418,10 @@ INFO - Triggers: digital buttons 7/8
 
 ### 시뮬레이터 창이 안 뜬다
 
-- `xhost +local:docker` 를 실행했는지 확인 (재부팅 시 초기화)
-- `echo $DISPLAY` 가 비어 있지 않은지 확인
+- `echo $DISPLAY` 가 비어 있지 않은지, 컨테이너에 박힌 값과 같은지 확인:
+  `docker inspect rby1-sim-rby1-sim-1 --format '{{.Config.Env}}'`
+  다르면 컨테이너를 지우고 `up --build`로 다시 만든다
+- 컨테이너가 root로 돌고 있다면 `xhost +SI:localuser:root` 필요 (현재 구성은 UID 1000이라 불필요)
 - GPU 노드 확인: `ls /dev/dri`
 - Wayland 세션이면 Xwayland가 있어야 함
 
